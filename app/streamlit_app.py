@@ -1,4 +1,4 @@
-# app/streamlit_app.py
+# app/streamlit_app.py (deployment-friendly, no DB)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8,16 +8,15 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sklearn.metrics import confusion_matrix, roc_curve, auc
 from sklearn.model_selection import train_test_split
-from sqlalchemy import create_engine
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from src.config import DATA_PROCESSED, MODELS_DIR, DB_URL
+from src.config import DATA_PROCESSED, MODELS_DIR
 
 st.set_page_config(page_title="Olist Delivery Analytics", page_icon="📦", layout="wide", initial_sidebar_state="expanded")
 
-# Custom CSS (same as before – keep it)
+# Custom CSS (same as before – keep your existing CSS)
 st.markdown("""
 <style>
     #MainMenu {visibility: hidden;}
@@ -74,80 +73,16 @@ def load_feature_data():
     df['is_late'] = df['is_late'].astype(int)
     return df
 
-@st.cache_data
-def load_sales_summary():
-    engine = create_engine(DB_URL)
-    return pd.read_sql("SELECT * FROM sales_summary ORDER BY month", engine)
-
-@st.cache_data
-def load_top_cities():
-    engine = create_engine(DB_URL)
-    return pd.read_sql("""
-        SELECT customer_city, COUNT(*) as count
-        FROM customer_summary
-        GROUP BY customer_city
-        ORDER BY count DESC
-        LIMIT 10
-    """, engine)
-
-@st.cache_data
-def load_rfm_data():
-    engine = create_engine(DB_URL)
-    df = pd.read_sql("""
-        SELECT 
-            c.customer_unique_id,
-            MAX(o.order_purchase_timestamp) as last_order_date,
-            COUNT(o.order_id) as frequency,
-            SUM(p.payment_value) as monetary
-        FROM customers c
-        JOIN orders o ON c.customer_id = o.customer_id
-        JOIN payments p ON o.order_id = p.order_id
-        GROUP BY c.customer_unique_id
-    """, engine)
-    today = pd.Timestamp.now()
-    df['recency'] = (today - df['last_order_date']).dt.days
-    df = df[df['frequency'] > 0].copy()
-    return df
-
 def reset_filters():
     st.session_state["cat_filter"] = "All"
     st.session_state["state_filter"] = "All"
     st.session_state["month_filter"] = "All"
 
-def compute_rfm_segments(df):
-    df['r_score'] = pd.qcut(df['recency'], q=4, labels=['4','3','2','1'])
-    df['f_score'] = pd.qcut(df['frequency'].rank(method='first'), q=4, labels=['1','2','3','4'])
-    df['m_score'] = pd.qcut(df['monetary'].rank(method='first'), q=4, labels=['1','2','3','4'])
-    
-    def rfm_segment(row):
-        r, f, m = int(row['r_score']), int(row['f_score']), int(row['m_score'])
-        if r >= 3 and f >= 3 and m >= 3:
-            return 'Champions'
-        elif r >= 3 and f >= 2 and m >= 2:
-            return 'Loyal Customers'
-        elif r >= 2 and f >= 2 and m >= 2:
-            return 'Potential Loyalists'
-        elif r >= 3 and f == 1:
-            return 'New Customers'
-        elif r == 1 and f >= 2 and m >= 2:
-            return 'At Risk'
-        elif r == 1 and f == 1 and m == 1:
-            return 'Lost'
-        else:
-            return 'Others'
-    
-    df['segment'] = df.apply(rfm_segment, axis=1)
-    return df
-
 def main():
     df = load_feature_data()
     model = load_model()
-    df_sales = load_sales_summary()
-    df_cities = load_top_cities()
-    df_rfm_raw = load_rfm_data()
-    df_rfm = compute_rfm_segments(df_rfm_raw)
     
-    # Sidebar filters (top 5)
+    # Sidebar filters
     cat_counts = df['main_category'].value_counts().head(5).index.tolist()
     state_cols = [c for c in df.columns if c.startswith("state_")]
     state_volumes = {c.replace("state_", ""): df[c].sum() for c in state_cols}
@@ -156,7 +91,7 @@ def main():
     
     with st.sidebar:
         st.markdown("### 📦 Olist Analytics")
-        st.markdown("**Delivery Performance & Business Insights**")
+        st.markdown("**Delivery Performance**")
         st.markdown("---")
         st.markdown("#### 🔍 Filters")
         st.selectbox("Product Category (Top 5)", ["All"] + cat_counts, index=0, key="cat_filter")
@@ -168,7 +103,7 @@ def main():
         st.markdown("**Model version:** XGBoost v1.0")
         st.markdown("**Last updated:** 2025-01-15")
     
-    # Apply filters to delivery data only
+    # Apply filters
     filtered = df.copy()
     if st.session_state["cat_filter"] != "All":
         filtered = filtered[filtered['main_category'] == st.session_state["cat_filter"]]
@@ -179,7 +114,7 @@ def main():
     if st.session_state["month_filter"] != "All":
         filtered = filtered[filtered['purchase_month'] == int(st.session_state["month_filter"])]
     
-    # ---------- KPI Cards (global, not filtered) ----------
+    # KPI Cards (filtered)
     total_orders = len(filtered)
     late_pct = filtered['is_late'].mean() * 100
     avg_items = filtered['total_items'].mean()
@@ -187,17 +122,16 @@ def main():
     
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.markdown(f"""<div class="kpi-card"><div class="kpi-value">{total_orders:,}</div><div class="kpi-label">TOTAL ORDERS (filtered)</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card"><div class="kpi-value">{total_orders:,}</div><div class="kpi-label">TOTAL ORDERS</div></div>""", unsafe_allow_html=True)
     with col2:
-        st.markdown(f"""<div class="kpi-card"><div class="kpi-value">{late_pct:.1f}%</div><div class="kpi-label">LATE DELIVERY RATE (filtered)</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card"><div class="kpi-value">{late_pct:.1f}%</div><div class="kpi-label">LATE DELIVERY RATE</div></div>""", unsafe_allow_html=True)
     with col3:
-        st.markdown(f"""<div class="kpi-card"><div class="kpi-value">{avg_items:.1f}</div><div class="kpi-label">AVG ITEMS PER ORDER (filtered)</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card"><div class="kpi-value">{avg_items:.1f}</div><div class="kpi-label">AVG ITEMS PER ORDER</div></div>""", unsafe_allow_html=True)
     with col4:
-        st.markdown(f"""<div class="kpi-card"><div class="kpi-value">R$ {avg_freight:.2f}</div><div class="kpi-label">AVG FREIGHT (filtered)</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card"><div class="kpi-value">R$ {avg_freight:.2f}</div><div class="kpi-label">AVG FREIGHT</div></div>""", unsafe_allow_html=True)
     
     # ==================== DELIVERY EDA (FILTERED) ====================
-    st.markdown('<div class="section-header">📊 Delivery Performance Analysis (Filtered)</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-caption">These charts update based on your filters above.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">📊 Delivery Performance Analysis</div>', unsafe_allow_html=True)
     
     col1, col2 = st.columns(2)
     with col1:
@@ -305,55 +239,6 @@ def main():
         """)
     
     st.markdown("---")
-    # ==================== BUSINESS INSIGHTS (GLOBAL) ====================
-    st.markdown('<div class="section-header">📈 Business Performance (Global Metrics)</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-caption">These charts show overall business performance across all orders – they do not change with filters.</div>', unsafe_allow_html=True)
-
-    # RFM segmentation
-    segment_counts = df_rfm['segment'].value_counts().reset_index()
-    segment_counts.columns = ['segment', 'count']
-    avg_monetary = df_rfm.groupby('segment')['monetary'].mean().sort_values(ascending=False).reset_index()
-    fig_rfm = make_subplots(rows=1, cols=2, specs=[[{'type':'pie'}, {'type':'bar'}]],
-                            subplot_titles=('Customer Segments', 'Average Spend by Segment'))
-    fig_rfm.add_trace(go.Pie(labels=segment_counts['segment'], values=segment_counts['count'],
-                             hole=0.3, textinfo='percent+label', name='Segments'), row=1, col=1)
-    fig_rfm.add_trace(go.Bar(x=avg_monetary['segment'], y=avg_monetary['monetary'],
-                             marker_color=avg_monetary['monetary'], marker_colorscale='Viridis',
-                             showlegend=False, name='Avg Spend'), row=1, col=2)
-    fig_rfm.update_layout(height=500, template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)')
-    fig_rfm.update_yaxes(title_text='Avg Total Spend (R$)', row=1, col=2)
-    st.plotly_chart(fig_rfm, use_container_width=True)    
-    # Sales performance
-    fig_sales = make_subplots(rows=2, cols=2,
-                              subplot_titles=('Monthly Revenue (R$)', 'Monthly Orders',
-                                              'Avg Order Payment (R$)', 'Monthly Items Sold'))
-    fig_sales.add_trace(go.Scatter(x=df_sales['month'], y=df_sales['total_payment_revenue'],
-                                   mode='lines+markers', name='Revenue', line=dict(color='#7C3AED')), row=1, col=1)
-    fig_sales.add_trace(go.Scatter(x=df_sales['month'], y=df_sales['total_orders'],
-                                   mode='lines+markers', name='Orders', line=dict(color='#FFA07A')), row=1, col=2)
-    fig_sales.add_trace(go.Scatter(x=df_sales['month'], y=df_sales['avg_order_payment'],
-                                   mode='lines+markers', name='Avg Payment', line=dict(color='#2ECC71')), row=2, col=1)
-    fig_sales.add_trace(go.Scatter(x=df_sales['month'], y=df_sales['total_items_sold'],
-                                   mode='lines+markers', name='Items Sold', line=dict(color='#E74C3C')), row=2, col=2)
-    fig_sales.update_layout(height=600, template='plotly_dark', showlegend=False, paper_bgcolor='rgba(0,0,0,0)')
-    fig_sales.update_xaxes(title_text='Month', tickangle=-45)
-    fig_sales.update_yaxes(title_text='Revenue (R$)', row=1, col=1)
-    fig_sales.update_yaxes(title_text='Orders', row=1, col=2)
-    fig_sales.update_yaxes(title_text='Avg Payment (R$)', row=2, col=1)
-    fig_sales.update_yaxes(title_text='Items Sold', row=2, col=2)
-    st.plotly_chart(fig_sales, use_container_width=True)
-    
-    # Top 10 cities
-    fig_cities = px.bar(df_cities, x='customer_city', y='count',
-                        title='Top 10 Cities by Customer Count',
-                        labels={'customer_city': 'City', 'count': 'Number of Customers'},
-                        color='count', color_continuous_scale='Blues',
-                        template='plotly_dark')
-    fig_cities.update_layout(xaxis_tickangle=-45, height=400, paper_bgcolor='rgba(0,0,0,0)')
-    st.plotly_chart(fig_cities, use_container_width=True)
-    
-
-        
     st.markdown("<center style='color:#a0a4c0; font-size:0.8rem'>Author: Younes Benali | Data source: Olist Brazilian E‑commerce | Built with Streamlit</center>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
