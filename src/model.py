@@ -33,8 +33,8 @@ def train_model(save_model=True):
     
     # XGBoost classifier
     model = xgb.XGBClassifier(
-        n_estimators=150,
-        max_depth=6,
+        n_estimators=100,
+        max_depth=3,
         learning_rate=0.1,
         scale_pos_weight=scale_pos_weight,
         random_state=42,
